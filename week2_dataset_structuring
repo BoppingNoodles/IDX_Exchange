@@ -2,78 +2,76 @@ import pandas as pd
 import glob
 import matplotlib.pyplot as plt
 import seaborn as sns
-# Get all CRMLSSold files
-sold_data = glob.glob('**/CRMLSSold*.csv',recursive=True)
+import warnings
 
+warnings.filterwarnings('ignore')
+
+# ==========================================
+# PART 1: CRMLS SOLD DATA PIPELINE
+# ==========================================
+
+# 1. Data Aggregation
+sold_data = glob.glob('**/CRMLSSold*.csv', recursive=True)
 df_list = []
 for file in sold_data:
-    df = pd.read_csv(file, encoding='ISO-8859-1',low_memory=True)
-    print(f"Rows before aggregation: {len(df)}")
+    df = pd.read_csv(file, encoding='ISO-8859-1', low_memory=False)
     df_list.append(df)
 sold_df = pd.concat(df_list, ignore_index=True)
 
-print(f'Rows after aggregation: {len(sold_df)}')
-
-# Filter to residential
-print(f"Rows before Residential Filter: {len(sold_df)}")
+# 2. Filter to Residential
 sold_df = sold_df[sold_df['PropertyType'] == "Residential"]
-print(f"Rows after Residential Filter: {len(sold_df)}")
 
-# Save to csv 
-sold_df.to_csv('CRMLSSoldResidential.csv', index=False)
-
-sold_df.head()
-# Number of rows and columns
-sold_df.shape
-# Look at dataframe columns
-sold_df.columns
-# Look at dataframe columns
-sold_df.columns
-# Identify high-missing columns
-sold_df.isnull().sum()
-# Calculate missing counts and percentages per column
-null_counts = sold_df.isnull().sum()
-null_pct = (sold_df.isnull().sum() / len(sold_df)) * 100
-
-null_report = pd.DataFrame({'Counts': null_counts, 'Percentage': null_pct})
-high_missing = null_report[null_report['Percentage'] > 90]
-print(high_missing)
-# Drop columns
-print(f"Number of columns before dropping: {sold_df.shape[1]}")
+# 3. Drop columns with >90% missing values
 threshold = 0.1 * len(sold_df)
 sold_df.dropna(thresh=threshold, axis=1, inplace=True)
-print(f"Number of columns after dropping: {sold_df.shape[1]}")
-# Analyze distribution of key numeric fields
-core_numeric = ['ClosePrice', 'ListPrice','OriginalListPrice','LivingArea','LotSizeAcres','BedroomsTotal','BathroomsTotalInteger','DaysOnMarket','YearBuilt']
-sold_df[core_numeric].describe()
-# Graphs
+
+# 4. Outlier & Distribution Graphs
+core_numeric_sold = ['ClosePrice', 'ListPrice','OriginalListPrice','LivingArea','LotSizeAcres','BedroomsTotal','BathroomsTotalInteger','DaysOnMarket','YearBuilt']
 fig, axes = plt.subplots(nrows=9, ncols=2, figsize=(12,40))
 
-for i, col in enumerate(core_numeric):
-    # Histogram
-    sns.histplot(sold_df[col],bins=50,kde=True, ax=axes[i,0])
-    axes[i,0].set_title(f'{col} Distribution')
-    
-    # Boxplot
-    sns.boxplot(x=sold_df[col], ax=axes[i,1])
-    axes[i,1].set_title(f'{col} Outliers')
+for i, col in enumerate(core_numeric_sold):
+    if col in sold_df.columns:
+        sns.histplot(sold_df[col].dropna(), bins=50, kde=True, ax=axes[i,0])
+        axes[i,0].set_title(f'{col} Distribution')
+        sns.boxplot(x=sold_df[col].dropna(), ax=axes[i,1])
+        axes[i,1].set_title(f'{col} Outliers')
 plt.tight_layout()
 plt.show()
 
-# Fetch mortgage rate data
+# 5. Fetch and Merge FRED Mortgage Data
 url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
-mortgage = pd.read_csv(url, parse_dates=['DATE'])
-mortgage.columns = ['date','rate_30yr_fixed']
-
-# Resample weekly rates to montly averages
+mortgage = pd.read_csv(url, parse_dates=['observation_date'])
+mortgage.columns = ['date', 'rate_30yr_fixed']
 mortgage['year_month'] = mortgage['date'].dt.to_period('M')
-mortgage_monthly = (
-    mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
-)
-# Create a matching year_month key on the MLS datasets
-sold_df['year-month'] = pd.to_datetime(sold_df['CloseDate']).dt.to_period('M')
-sold_with_rates_df = sold_df.merge(mortgage_monthly, on='year_month',how='left')
-print(sold_with_rates_df['rate_30yr_fixed']).isnull().sum()
+mortgage_monthly = mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
+# 1. Data Aggregation
+listing_data = glob.glob('**/CRMLSListing*.csv', recursive=True)
+df_list = []
+for file in listing_data:
+    df = pd.read_csv(file, encoding='ISO-8859-1', low_memory=False)
+    df_list.append(df)
+listing_df = pd.concat(df_list, ignore_index=True)
 
-# Preview
-print(sold_with_rates_df[['CloseDate','year_month','ClosePrice','rate_30yr_fixed']].head())
+# 2. Filter to Residential
+listing_df = listing_df[listing_df['PropertyType'] == "Residential"]
+
+# 3. Drop columns with >90% missing values
+threshold = 0.1 * len(listing_df)
+listing_df.dropna(thresh=threshold, axis=1, inplace=True)
+
+# 4. Outlier & Distribution Graphs
+core_numeric_listing = ['ClosePrice', 'ListPrice','OriginalListPrice','LivingArea','LotSizeAcres','BedroomsTotal','BathroomsTotalInteger','DaysOnMarket','YearBuilt']
+fig, axes = plt.subplots(nrows=9, ncols=2, figsize=(12,40))
+
+for i, col in enumerate(core_numeric_listing):
+    if col in listing_df.columns:
+        sns.histplot(listing_df[col].dropna(), bins=50, kde=True, ax=axes[i,0])
+        axes[i,0].set_title(f'{col} Distribution')
+        sns.boxplot(x=listing_df[col].dropna(), ax=axes[i,1])
+        axes[i,1].set_title(f'{col} Outliers')
+plt.tight_layout()
+plt.show()
+
+# 5. Fetch and Merge FRED Mortgage Data
+listing_df['year_month'] = pd.to_datetime(listing_df['ListingContractDate']).dt.to_period('M')
+listing_with_rates_df = listing_df.merge(mortgage_monthly, on='year_month', how='left')

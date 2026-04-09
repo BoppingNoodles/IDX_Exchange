@@ -1,0 +1,135 @@
+import pandas as pd
+import glob
+import matplotlib.pyplot as plt
+import seaborn as sns
+# Get all CRMLSSold files
+sold_data = glob.glob('**/CRMLSSold*.csv',recursive=True)
+
+df_list = []
+for file in sold_data:
+    df = pd.read_csv(file, encoding='ISO-8859-1',low_memory=True)
+    print(f"Rows before aggregation: {len(df)}")
+    df_list.append(df)
+sold_df = pd.concat(df_list, ignore_index=True)
+
+print(f'Rows after aggregation: {len(sold_df)}')
+
+# Filter to residential
+print(f"Rows before Residential Filter: {len(sold_df)}")
+sold_df = sold_df[sold_df['PropertyType'] == "Residential"]
+print(f"Rows after Residential Filter: {len(sold_df)}")
+
+# Save to csv 
+sold_df.to_csv('CRMLSSoldResidential.csv', index=False)
+
+sold_df.head()
+# Number of rows and columns
+sold_df.shape
+# Look at dataframe columns
+sold_df.columns
+# Look at dataframe columns
+sold_df.columns
+# Identify high-missing columns
+sold_df.isnull().sum()
+# Calculate missing counts and percentages per column
+null_counts = sold_df.isnull().sum()
+null_pct = (sold_df.isnull().sum() / len(sold_df)) * 100
+
+null_report = pd.DataFrame({'Counts': null_counts, 'Percentage': null_pct})
+high_missing = null_report[null_report['Percentage'] > 90]
+print(high_missing)
+# Drop columns
+print(f"Number of columns before dropping: {sold_df.shape[1]}")
+threshold = 0.1 * len(sold_df)
+sold_df.dropna(thresh=threshold, axis=1, inplace=True)
+print(f"Number of columns after dropping: {sold_df.shape[1]}")
+# Analyze distribution of key numeric fields
+core_numeric = ['ClosePrice', 'ListPrice','OriginalListPrice','LivingArea','LotSizeAcres','BedroomsTotal','BathroomsTotalInteger','DaysOnMarket','YearBuilt']
+sold_df[core_numeric].describe()
+# Graphs
+fig, axes = plt.subplots(nrows=9, ncols=2, figsize=(12,40))
+
+for i, col in enumerate(core_numeric):
+    # Histogram
+    sns.histplot(sold_df[col],bins=50,kde=True, ax=axes[i,0])
+    axes[i,0].set_title(f'{col} Distribution')
+    
+    # Boxplot
+    sns.boxplot(x=sold_df[col], ax=axes[i,1])
+    axes[i,1].set_title(f'{col} Outliers')
+plt.tight_layout()
+plt.show()
+
+# Fetch mortgage rate data
+url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
+mortgage = pd.read_csv(url, parse_dates=['DATE'])
+mortgage.columns = ['date','rate_30yr_fixed']
+
+# Resample weekly rates to montly averages
+mortgage['year_month'] = mortgage['date'].dt.to_period('M')
+mortgage_monthly = (
+    mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
+)
+# Create a matching year_month key on the MLS datasets
+sold_df['year-month'] = pd.to_datetime(sold_df['CloseDate']).dt.to_period('M')
+sold_with_rates_df = sold_df.merge(mortgage_monthly, on='year_month',how='left')
+print(sold_with_rates_df['rate_30yr_fixed']).isnull().sum()
+
+# Preview
+print(sold_with_rates_df[['CloseDate','year_month','ClosePrice','rate_30yr_fixed']].head())
+
+# Convert data fields to datetime format
+sold_with_rates_df['CloseDate'] = pd.to_datetime(sold_with_rates_df['CloseDate'])
+sold_with_rates_df['ListingContractDate'] = pd.to_datetime(sold_with_rates_df['ListingContractDate'])
+sold_with_rates_df['PurchaseContractDate'] = pd.to_datetime(sold_with_rates_df['PurchaseContractDate'])
+sold_with_rates_df['ContractStatusChangeDate'] = pd.to_datetime(sold_with_rates_df['ContractStatusChangeDate'])
+
+# Check for duplicates
+sold_with_rates_df[sold_with_rates_df.duplicated(subset='ListingKey')]
+sold_with_rates_df = sold_with_rates_df.drop_duplicates(subset=['ListingKey'], keep='last') # Keep the most recent property with the listing key
+
+# Drop rows if missing critical value
+must_columns = ['ListingKey', 'ClosePrice', 'CloseDate', 'City']
+sold_with_rates_df = sold_with_rates_df.dropna(subset=must_columns)
+
+# Fill in missing counts with '0'
+zero_fill_cols = ['GarageSpaces', 'ParkingTotal', 'FireplacesTotal']
+
+for col in zero_fill_cols:
+    if col in sold_with_rates_df.columns:
+        sold_with_rates_df[col] = sold_with_rates_df[col].fillna(0)
+
+# Fill in missing Yes/No features with 'No'
+fill_no_cols = ['PoolPrivateYN', 'ViewYN', 'CoolingYN', 'HeatingYN']
+for col in fill_no_cols:
+    if col in sold_df.columns:
+        sold_with_rates_df[col] = sold_with_rates_df[col].fillna(False)
+
+# Fill in missing categorical data with "Unknown"
+cat_fill_cols = ['ArchitectureStyle', 'Heating', 'Cooling', 'WaterSource']
+for col in cat_fill_cols:
+    if col in sold_df.columns:
+        sold_with_rates_df[col] = sold_with_rates_df[col].fillna('Unknown')
+
+# Fill in missing numerical values
+num_fill_cols = ['LotSizeArea', 'YearBuilt']
+for col in num_fill_cols:
+    if col in sold_df.columns:
+        col_median = sold_df[col].median()
+        sold_with_rates_df[col] = sold_with_rates_df[col].fillna(col_median)
+
+# Drop missing Living Area
+sold_with_rates_df = sold_with_rates_df.dropna(subset='LivingArea')
+# Filter out where Living Area is less than 0
+sold_with_rates_df = sold_with_rates_df[sold_df['LivingArea'] > 0]
+# Remove rows with invalid numeric values
+sold_with_rates_df = sold_with_rates_df[(sold_with_rates_df['ClosePrice'] > 0) & (sold_with_rates_df['LivingArea'] > 0) & (sold_with_rates_df['DaysOnMarket'] >= 0) & (sold_with_rates_df['Bedrooms'] >= 0) & (sold_with_rates_df['Bathrooms'] >= 0)]
+# Data consistency checks
+sold_with_rates_df['listing_after_close_flag'] = sold_with_rates_df['ListingContractDate'] < sold_with_rates_df['PurchaseContractDate']
+sold_with_rates_df['purchase_after_close_flag'] = sold_with_rates_df['PurchaseContractDate'] > sold_with_rates_df['ListingContractDate']
+sold_with_rates_df['negative_timeline_flag'] = sold_with_rates_df['DaysOnMarket'] < 0
+# Geographic Data Checks
+sold_with_rates_df['missing_coords'] = sold_with_rates_df['Latitude'].isnull() | sold_with_rates_df['Longitude'].isnull()
+sold_with_rates_df['sentinel_coords'] = (sold_with_rates_df['Latitude'] == 0) | (sold_with_rates_df['Longitude'] == 0)
+sold_with_rates_df['cal_coords'] = sold_with_rates_df['Longitude'] > 0
+sold_with_rates_df

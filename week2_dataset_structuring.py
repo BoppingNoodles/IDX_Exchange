@@ -1,0 +1,81 @@
+import pandas as pd
+import glob
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ==========================================
+# PART 1: CRMLS SOLD DATA PIPELINE
+# ==========================================
+
+# 1. Data Aggregation
+sold_data = glob.glob('**/CRMLSSold*.csv', recursive=True)
+df_list = []
+for file in sold_data:
+    df = pd.read_csv(file, encoding='ISO-8859-1', low_memory=False)
+    df_list.append(df)
+sold_df = pd.concat(df_list, ignore_index=True)
+
+# 2. Filter to Residential
+sold_df = sold_df[sold_df['PropertyType'] == "Residential"]
+
+# 3. Drop columns with >90% missing values
+threshold = 0.1 * len(sold_df)
+sold_df.dropna(thresh=threshold, axis=1, inplace=True)
+
+# 4. Outlier & Distribution Graphs
+core_numeric_sold = ['ClosePrice', 'ListPrice','OriginalListPrice','LivingArea','LotSizeAcres','BedroomsTotal','BathroomsTotalInteger','DaysOnMarket','YearBuilt']
+fig, axes = plt.subplots(nrows=9, ncols=2, figsize=(12,40))
+
+for i, col in enumerate(core_numeric_sold):
+    if col in sold_df.columns:
+        sns.histplot(sold_df[col].dropna(), bins=50, kde=True, ax=axes[i,0])
+        axes[i,0].set_title(f'{col} Distribution')
+        sns.boxplot(x=sold_df[col].dropna(), ax=axes[i,1])
+        axes[i,1].set_title(f'{col} Outliers')
+plt.tight_layout()
+plt.show()
+
+# 5. Fetch and Merge FRED Mortgage Data
+url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
+mortgage = pd.read_csv(url, parse_dates=['observation_date'])
+mortgage.columns = ['date', 'rate_30yr_fixed']
+mortgage['year_month'] = mortgage['date'].dt.to_period('M')
+mortgage_monthly = mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
+
+# ==========================================
+# PART 1: CRMLS LISTING DATA PIPELINE
+# ==========================================
+# 1. Data Aggregation
+listing_data = glob.glob('**/CRMLSListing*.csv', recursive=True)
+df_list = []
+for file in listing_data:
+    df = pd.read_csv(file, encoding='ISO-8859-1', low_memory=False)
+    df_list.append(df)
+listing_df = pd.concat(df_list, ignore_index=True)
+
+# 2. Filter to Residential
+listing_df = listing_df[listing_df['PropertyType'] == "Residential"]
+
+# 3. Drop columns with >90% missing values
+threshold = 0.1 * len(listing_df)
+listing_df.dropna(thresh=threshold, axis=1, inplace=True)
+
+# 4. Outlier & Distribution Graphs
+core_numeric_listing = ['ClosePrice', 'ListPrice','OriginalListPrice','LivingArea','LotSizeAcres','BedroomsTotal','BathroomsTotalInteger','DaysOnMarket','YearBuilt']
+fig, axes = plt.subplots(nrows=9, ncols=2, figsize=(12,40))
+
+for i, col in enumerate(core_numeric_listing):
+    if col in listing_df.columns:
+        sns.histplot(listing_df[col].dropna(), bins=50, kde=True, ax=axes[i,0])
+        axes[i,0].set_title(f'{col} Distribution')
+        sns.boxplot(x=listing_df[col].dropna(), ax=axes[i,1])
+        axes[i,1].set_title(f'{col} Outliers')
+plt.tight_layout()
+plt.show()
+
+# 5. Fetch and Merge FRED Mortgage Data
+listing_df['year_month'] = pd.to_datetime(listing_df['ListingContractDate']).dt.to_period('M')
+listing_with_rates_df = listing_df.merge(mortgage_monthly, on='year_month', how='left')

@@ -210,4 +210,3 @@ listing_with_rates_df['Year'] = listing_with_rates_df['ListingContractDate'].dt.
 listing_with_rates_df['Month'] = listing_with_rates_df['ListingContractDate'].dt.month
 listing_with_rates_df['YrMo'] = listing_with_rates_df['ListingContractDate'].dt.to_period('M').astype(str)
 
-print("Pipeline execution complete! Both Sold and Listing datasets are successfully cleaned, merged with mortgage rates, and feature-engineered.")

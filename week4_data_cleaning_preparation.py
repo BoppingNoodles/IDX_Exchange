@@ -136,58 +136,7 @@ sold_with_rates_df = sold_with_rates_df[
 ]
 print(f'Number of rows after cleaning: {sold_with_rates_df.shape[0]}')
 
-# 12. Feature Engineering (Sold Dataset)
-sold_with_rates_df['PriceRatio'] = sold_with_rates_df['ClosePrice'] / sold_with_rates_df['OriginalListPrice']
-sold_with_rates_df['PricePerSqFt'] = sold_with_rates_df['ClosePrice'] / sold_with_rates_df['LivingArea']
-sold_with_rates_df['Year'] = sold_with_rates_df['CloseDate'].dt.year
-sold_with_rates_df['Month'] = sold_with_rates_df['CloseDate'].dt.month
-sold_with_rates_df['YrMo'] = sold_with_rates_df['CloseDate'].dt.to_period('M').astype(str)
-sold_with_rates_df['CloseToOriginalListRatio'] = sold_with_rates_df['ClosePrice'] / sold_with_rates_df['OriginalListPrice']
-sold_with_rates_df['ListingToContractDays'] = sold_with_rates_df['PurchaseContractDate'] - sold_with_rates_df['ListingContractDate']
-sold_with_rates_df['ContractToCloseDays'] = sold_with_rates_df['CloseDate'] - sold_with_rates_df['PurchaseContractDate']
 
-columns = ['PriceRatio', 'PricePerSqFt', 'Year', 'Month', 'YrMo', 'CloseToOriginalListRatio', 'ListingToContractDays', 'ContractToCloseDays']
-print(sold_with_rates_df[columns].head())
-
-# 13. Segmented Analysis
-residential_analysis = sold_with_rates_df.groupby('PropertySubType').agg({
-    'ClosePrice': 'median',
-    'PricePerSqFt': 'median',
-    'DaysOnMarket': 'mean',
-    'ListingKey': 'count'
-}).reset_index()
-
-area_analysis = sold_with_rates_df.groupby(['CountyOrParish', 'MLSAreaMajor']).agg({
-    'ClosePrice': 'median',
-    'PricePerSqFt': 'median',
-    'DaysOnMarket': 'mean',
-    'ListingKey': 'count'
-}).reset_index()
-
-office_analysis = sold_with_rates_df.groupby(['ListOfficeName', 'BuyerOfficeName']).agg({
-    'ClosePrice': 'median',
-    'PricePerSqFt': 'median',
-    'DaysOnMarket': 'mean',
-    'ListingKey': 'count'
-}).reset_index()
-
-print(f"Property Type\n{'-' * 20}\n{residential_analysis.head()}\n")
-print(f"Area Analysis\n{'-' * 20}\n{area_analysis.head()}\n")
-print(f"Office Analysis\n{'-' * 20}\n{office_analysis.head()}\n")
-
-# 14. Statistical Outlier Removal (IQR)
-Q1 = sold_with_rates_df['ClosePrice'].quantile(0.25)
-Q3 = sold_with_rates_df['ClosePrice'].quantile(0.75)
-IQR = Q3 - Q1
-lower = Q1 - 1.5 * IQR
-upper = Q3 + 1.5 * IQR
-sold_with_rates_df = sold_with_rates_df[
-    (sold_with_rates_df['ClosePrice'] >= lower) &
-    (sold_with_rates_df['ClosePrice'] <= upper)
-]
-
-# 15. Export Final Sold Dataset
-sold_with_rates_df.to_csv('Final_Sold.csv', index=False)
 
 
 # ==========================================
@@ -313,35 +262,3 @@ print(f'Number of rows after cleaning: {listing_with_rates_df.shape[0]}')
 listing_with_rates_df = listing_with_rates_df[listing_with_rates_df['LivingArea'].isna() | (listing_with_rates_df['LivingArea'] > 0)]
 listing_with_rates_df = listing_with_rates_df[listing_with_rates_df['Latitude'].isna() | listing_with_rates_df['Longitude'].between(-124, -114)]
 listing_with_rates_df = listing_with_rates_df[listing_with_rates_df['DaysOnMarket'].isna() | (listing_with_rates_df['DaysOnMarket'] >= 0)]
-
-# 12. Feature Engineering (Listing Dataset)
-# NOTE: Sold-only features (ClosePrice-based) are not engineered here since listings
-# include active and pending records. Features are derived from listing-stage fields.
-listing_with_rates_df['Year'] = listing_with_rates_df['ListingContractDate'].dt.year
-listing_with_rates_df['Month'] = listing_with_rates_df['ListingContractDate'].dt.month
-listing_with_rates_df['YrMo'] = listing_with_rates_df['ListingContractDate'].dt.to_period('M').astype(str)
-listing_with_rates_df['ListPricePerSqFt'] = listing_with_rates_df['ListPrice'] / listing_with_rates_df['LivingArea']
-
-columns = ['Year', 'Month', 'YrMo', 'ListPricePerSqFt']
-print(listing_with_rates_df[columns].head())
-
-# 13. Segmented Analysis
-listing_property_segment = listing_with_rates_df.groupby('PropertySubType').agg({
-    'ListPrice': 'median',
-    'ListPricePerSqFt': 'median',
-    'DaysOnMarket': 'mean',
-    'ListingKey': 'count'
-}).rename(columns={'ListingKey': 'Active_Listings'}).reset_index()
-
-print(f"Active Listings by Property Type\n{'*' * 30}\n{listing_property_segment}\n")
-
-listing_county_segment = listing_with_rates_df.groupby('CountyOrParish').agg({
-    'ListPrice': 'median',
-    'DaysOnMarket': 'mean',
-    'ListingKey': 'count'
-}).rename(columns={'ListingKey': 'Active_Listings'}).reset_index()
-
-print(f"Active Listings by County\n{'*' * 30}\n{listing_county_segment}\n")
-
-# 14. Export Final Listing Dataset
-listing_with_rates_df.to_csv('Final_Listing.csv', index=False)

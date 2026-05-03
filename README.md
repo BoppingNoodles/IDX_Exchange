@@ -1,3 +1,40 @@
+# 🏡 IDX Exchange MLS Analytics Project
+
+A full-stack data analytics pipeline and dashboard project built during the IDX Exchange Data Analyst Internship Program. This project transforms raw MLS transaction data into actionable housing market insights using Python and Tableau.
+
+---
+
+## 📌 Overview
+
+This project follows a 12-week structured analytics pipeline covering:
+
+- Data extraction from MLS APIs  
+- Data cleaning and validation  
+- Feature engineering and market metric creation  
+- Outlier detection and statistical filtering  
+- Interactive dashboard development in Tableau  
+- Final market intelligence reporting  
+
+The end result is a set of professional-grade real estate analytics dashboards and a data-driven market report.
+
+---
+
+## 🎯 Project Objectives
+
+- Understand how real estate datasets are produced and structured  
+- Build end-to-end data pipelines using Python (Pandas)  
+- Develop key housing market indicators  
+- Create interactive Tableau dashboards  
+- Communicate insights through data storytelling  
+
+---
+
+## 🛠️ Tech Stack
+
+- Python (Pandas) – data processing & analysis  
+- Tableau Public – dashboard visualization  
+- CoreLogic Trestle API – MLS data source  
+- FRED API – mortgage rate enrichment  
 
 ---
 

@@ -222,29 +222,10 @@ if all(c in sold_with_rates_df.columns for c in ["PurchaseContractDate", "Listin
 if "PurchaseContractDate" in sold_with_rates_df.columns:
     sold_with_rates_df["ContractToCloseDays"] = sold_with_rates_df["CloseDate"] - sold_with_rates_df["PurchaseContractDate"]
 
-# 15. IQR outlier flagging + filtered dataset (notebook step)
-sold_rates_filtered_df = sold_with_rates_df.copy()
-if all(c in sold_with_rates_df.columns for c in ["ClosePrice", "LivingArea", "DaysOnMarket"]):
-    close_price_lower, close_price_upper = get_lower_and_upper(sold_with_rates_df, "ClosePrice")
-    living_area_lower, living_area_upper = get_lower_and_upper(sold_with_rates_df, "LivingArea")
-    days_lower, days_upper = get_lower_and_upper(sold_with_rates_df, "DaysOnMarket")
 
-    sold_with_rates_df["closeprice_outlier_flag"] = ~sold_with_rates_df["ClosePrice"].between(close_price_lower, close_price_upper)
-    sold_with_rates_df["livingarea_outlier_flag"] = ~sold_with_rates_df["LivingArea"].between(living_area_lower, living_area_upper)
-    sold_with_rates_df["dom_outlier_flag"] = ~sold_with_rates_df["DaysOnMarket"].between(days_lower, days_upper)
-
-    sold_rates_filtered_df = sold_with_rates_df[
-        (sold_with_rates_df["closeprice_outlier_flag"] == False)
-        & (sold_with_rates_df["livingarea_outlier_flag"] == False)
-        & (sold_with_rates_df["dom_outlier_flag"] == False)
-    ]
-
-print(f"Full SOLD dataset:     {len(sold_with_rates_df):,} rows")
-print(f"Filtered SOLD dataset: {len(sold_rates_filtered_df):,} rows")
-print(f"Removed SOLD:          {len(sold_with_rates_df) - len(sold_rates_filtered_df):,} rows")
 
 if WRITE_OUTPUTS:
-    sold_rates_filtered_df.to_csv("Final_Sold.csv", index=False)
+    sold_with_rates_df.to_csv("Final_Sold.csv", index=False)
 
 
 # ==========================================

@@ -207,44 +207,9 @@ sold_with_rates_df = sold_with_rates_df[
 ]
 print(f"Number of rows after cleaning: {sold_with_rates_df.shape[0]}")
 
-# 14. Feature creation (notebook step)
-if all(c in sold_with_rates_df.columns for c in ["ClosePrice", "LivingArea"]):
-    sold_with_rates_df["PricePerSqFt"] = sold_with_rates_df["ClosePrice"] / sold_with_rates_df["LivingArea"]
-if "CloseDate" in sold_with_rates_df.columns:
-    sold_with_rates_df["Year"] = sold_with_rates_df["CloseDate"].dt.year
-    sold_with_rates_df["Month"] = sold_with_rates_df["CloseDate"].dt.month
-    sold_with_rates_df["YrMo"] = sold_with_rates_df["CloseDate"].dt.to_period("M").astype(str)
-if "OriginalListPrice" in sold_with_rates_df.columns:
-    sold_with_rates_df["PriceRatio"] = sold_with_rates_df["ClosePrice"] / sold_with_rates_df["OriginalListPrice"]
-    sold_with_rates_df["CloseToOriginalListRatio"] = sold_with_rates_df["ClosePrice"] / sold_with_rates_df["OriginalListPrice"]
-if all(c in sold_with_rates_df.columns for c in ["PurchaseContractDate", "ListingContractDate"]):
-    sold_with_rates_df["ListingToContractDays"] = sold_with_rates_df["PurchaseContractDate"] - sold_with_rates_df["ListingContractDate"]
-if "PurchaseContractDate" in sold_with_rates_df.columns:
-    sold_with_rates_df["ContractToCloseDays"] = sold_with_rates_df["CloseDate"] - sold_with_rates_df["PurchaseContractDate"]
-
-# 15. IQR outlier flagging + filtered dataset (notebook step)
-sold_rates_filtered_df = sold_with_rates_df.copy()
-if all(c in sold_with_rates_df.columns for c in ["ClosePrice", "LivingArea", "DaysOnMarket"]):
-    close_price_lower, close_price_upper = get_lower_and_upper(sold_with_rates_df, "ClosePrice")
-    living_area_lower, living_area_upper = get_lower_and_upper(sold_with_rates_df, "LivingArea")
-    days_lower, days_upper = get_lower_and_upper(sold_with_rates_df, "DaysOnMarket")
-
-    sold_with_rates_df["closeprice_outlier_flag"] = ~sold_with_rates_df["ClosePrice"].between(close_price_lower, close_price_upper)
-    sold_with_rates_df["livingarea_outlier_flag"] = ~sold_with_rates_df["LivingArea"].between(living_area_lower, living_area_upper)
-    sold_with_rates_df["dom_outlier_flag"] = ~sold_with_rates_df["DaysOnMarket"].between(days_lower, days_upper)
-
-    sold_rates_filtered_df = sold_with_rates_df[
-        (sold_with_rates_df["closeprice_outlier_flag"] == False)
-        & (sold_with_rates_df["livingarea_outlier_flag"] == False)
-        & (sold_with_rates_df["dom_outlier_flag"] == False)
-    ]
-
-print(f"Full SOLD dataset:     {len(sold_with_rates_df):,} rows")
-print(f"Filtered SOLD dataset: {len(sold_rates_filtered_df):,} rows")
-print(f"Removed SOLD:          {len(sold_with_rates_df) - len(sold_rates_filtered_df):,} rows")
 
 if WRITE_OUTPUTS:
-    sold_rates_filtered_df.to_csv("Final_Sold.csv", index=False)
+    sold_with_rates_df.to_csv("Final_Sold.csv", index=False)
 
 
 # ==========================================
@@ -408,5 +373,5 @@ if "DaysOnMarket" in listing_with_rates_df.columns:
 
 
 if WRITE_OUTPUTS:
-    listing_rates_filtered_df.to_csv("Final_Listing.csv", index=False)
+    listing_with_rates_df.to_csv("Final_Listing.csv", index=False)
 

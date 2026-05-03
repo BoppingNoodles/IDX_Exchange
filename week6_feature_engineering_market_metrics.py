@@ -1,170 +1,439 @@
-import pandas as pd
-import numpy as np
 import glob
-import os
-from datetime import datetime
+import warnings
+from pathlib import Path
 
-def load_and_clean_data():
-    print("Loading data...")
-    # Get all CRMLS files (Listings and Sold)
-    listing_files = glob.glob('**/CRMLSListing*.csv', recursive=True)
-    sold_files = glob.glob('**/CRMLSSold*.csv', recursive=True)
-    
-    df_list = []
-    
-    # Load Listing Data
-    for file in listing_files:
-        try:
-            df = pd.read_csv(file, encoding='ISO-8859-1', low_memory=False)
-            df_list.append(df)
-        except Exception as e:
-            print(f"Error loading {file}: {e}")
-            
-    # Load Sold Data
-    for file in sold_files:
-        try:
-            df = pd.read_csv(file, encoding='ISO-8859-1', low_memory=False)
-            df_list.append(df)
-        except Exception as e:
-            print(f"Error loading {file}: {e}")
-            
-    if not df_list:
-        print("No data files found. Please ensure CRMLS CSV files are in the directory.")
-        return None
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
 
-    df = pd.concat(df_list, ignore_index=True)
-    print(f"Loaded {len(df)} total rows.")
+warnings.filterwarnings("ignore")
 
-    # Filter to Residential
-    df = df[df['PropertyType'] == 'Residential'].copy()
-    print(f"Filtered to {len(df)} residential rows.")
+# If True, writes cleaned outputs to disk (overwrites existing files).
+WRITE_OUTPUTS = False
 
-    # Data Cleaning
-    print("Cleaning data...")
-    
-    # Standardize Date Columns
-    date_cols = ['CloseDate', 'ListingContractDate', 'PurchaseContractDate', 'ContractStatusChangeDate']
-    for col in date_cols:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce')
 
-    # Deduplicate
-    df = df.drop_duplicates(subset=['ListingKey'], keep='last')
-    
-    # Fill missing values
-    zero_fill_cols = ['GarageSpaces', 'ParkingTotal', 'FireplacesTotal']
-    for col in zero_fill_cols:
-        if col in df.columns:
-            df[col] = df[col].fillna(0)
+def load_mortgage_monthly_rates() -> pd.DataFrame:
+    """
+    Load 30-year fixed mortgage rates and aggregate to monthly averages.
 
-    # Filter invalid numeric values
-    df = df[
-        (df['ListPrice'] > 0) & 
-        (df['LivingArea'] > 0)
-    ]
-    
-    # If ClosePrice exists (for sold records), use it; otherwise, focus on ListPrice
-    # But for the requested metrics, we definitely need ClosePrice for some.
-    
-    return df
-
-def enrich_mortgage_rates(df):
-    print("Enriching with mortgage rates...")
-    try:
+    Prefers local `MORTGAGE30US.csv` to avoid network dependency. Falls back
+    to the FRED CSV download URL if the local file is missing.
+    """
+    local_path = Path("MORTGAGE30US.csv")
+    if local_path.exists():
+        mortgage = pd.read_csv(local_path, parse_dates=["observation_date"])
+        # Local schema: observation_date, MORTGAGE30US
+        value_col = "MORTGAGE30US" if "MORTGAGE30US" in mortgage.columns else mortgage.columns[-1]
+        mortgage = mortgage.rename(columns={"observation_date": "date", value_col: "rate_30yr_fixed"})
+    else:
         url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
-        mortgage = pd.read_csv(url, parse_dates=['observation_date'])
-        mortgage.columns = ['date', 'rate_30yr_fixed']
-        
-        mortgage['year_month'] = mortgage['date'].dt.to_period('M')
-        mortgage_monthly = mortgage.groupby('year_month')['rate_30yr_fixed'].mean().reset_index()
-        
-        # Use ListingContractDate for enrichment if CloseDate is missing
-        df['year_month_key'] = df['ListingContractDate'].dt.to_period('M')
-        df = df.merge(mortgage_monthly, left_on='year_month_key', right_on='year_month', how='left')
-        df = df.drop(columns=['year_month_key', 'year_month'])
-    except Exception as e:
-        print(f"Warning: Could not enrich with mortgage rates: {e}")
-    
-    return df
+        mortgage = pd.read_csv(url, parse_dates=["observation_date"])
+        mortgage.columns = ["date", "rate_30yr_fixed"]
 
-def engineeer_metrics(df):
-    print("Engineering metrics...")
-    
-    # Price Ratio (negotiation strength)
-    # Using ClosePrice if available, else NaN
-    if 'ClosePrice' in df.columns and 'OriginalListPrice' in df.columns:
-        df['PriceRatio'] = df['ClosePrice'] / df['OriginalListPrice']
-        
-    # Close-to-Original-List Ratio
-    if 'ClosePrice' in df.columns and 'OriginalListPrice' in df.columns:
-        df['CloseToOriginalListRatio'] = df['ClosePrice'] / df['OriginalListPrice']
+    mortgage["year_month"] = mortgage["date"].dt.to_period("M")
+    return mortgage.groupby("year_month")["rate_30yr_fixed"].mean().reset_index()
 
-    # PPSF (Price Per Square Foot)
-    # Use ClosePrice if available, else ListPrice
-    if 'ClosePrice' in df.columns:
-        df['PPSF'] = df['ClosePrice'] / df['LivingArea']
-    else:
-        df['PPSF'] = df['ListPrice'] / df['LivingArea']
 
-    # YrMo (Year-Month)
-    # Use CloseDate if available, else ListingContractDate
-    if 'CloseDate' in df.columns:
-        df['YrMo'] = df['CloseDate'].dt.to_period('M').astype(str)
-        # Handle cases where CloseDate is NaT
-        mask = df['YrMo'] == 'NaT'
-        df.loc[mask, 'YrMo'] = df.loc[mask, 'ListingContractDate'].dt.to_period('M').astype(str)
-    else:
-        df['YrMo'] = df['ListingContractDate'].dt.to_period('M').astype(str)
+def get_lower_and_upper(df: pd.DataFrame, col: str):
+    q1 = df[col].quantile(0.25)
+    q3 = df[col].quantile(0.75)
+    iqr = q3 - q1
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    return lower, upper
 
-    # Listing-to-Contract Days
-    if 'PurchaseContractDate' in df.columns and 'ListingContractDate' in df.columns:
-        df['ListingToContractDays'] = (df['PurchaseContractDate'] - df['ListingContractDate']).dt.days
 
-    # Contract-to-Close Days
-    if 'CloseDate' in df.columns and 'PurchaseContractDate' in df.columns:
-        df['ContractToCloseDays'] = (df['CloseDate'] - df['PurchaseContractDate']).dt.days
+# ==========================================
+# PART 1: CRMLS SOLD DATA PIPELINE
+# ==========================================
 
-    return df
+# 1. Data Aggregation
+sold_data = glob.glob("**/CRMLSSold*.csv", recursive=True)
+sold_parts = []
+for file in sold_data:
+    df = pd.read_csv(file, encoding="ISO-8859-1", low_memory=False)
+    print(f"{file}: {len(df)}")
+    sold_parts.append(df)
+sold_df = pd.concat(sold_parts, ignore_index=True) if sold_parts else pd.DataFrame()
+print(f"Rows after aggregation: {len(sold_df)}")
 
-def main():
-    df = load_and_clean_data()
-    if df is None:
-        return
+# 2. Filter to Residential
+if not sold_df.empty and "PropertyType" in sold_df.columns:
+    print(f"Rows before Residential Filter: {len(sold_df)}")
+    sold_df = sold_df[sold_df["PropertyType"] == "Residential"]
+    print(f"Rows after Residential Filter: {len(sold_df)}")
 
-    df = enrich_mortgage_rates(df)
-    df = engineeer_metrics(df)
+# 3. Drop columns with >90% missing values
+if not sold_df.empty:
+    print(f"Number of columns before dropping: {sold_df.shape[1]}")
+    threshold = 0.1 * len(sold_df)
+    sold_df.dropna(thresh=threshold, axis=1, inplace=True)
+    print(f"Number of columns after dropping: {sold_df.shape[1]}")
 
-    # Filter for valid metrics (some require closed sales)
-    # We'll show the top of the dataframe with the new columns
-    display_cols = [
-        'ListingKey', 'PropertySubType', 'CountyOrParish', 'ListPrice', 'ClosePrice', 
-        'PriceRatio', 'CloseToOriginalListRatio', 'PPSF', 'DaysOnMarket', 
-        'YrMo', 'ListingToContractDays', 'ContractToCloseDays'
+# 4. Outlier & Distribution Graphs (EDA)
+core_numeric_sold = ["ClosePrice", "ListPrice", "DaysOnMarket"]
+if not sold_df.empty:
+    _ = sold_df[core_numeric_sold].describe()
+    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 40))
+    for i, col in enumerate(core_numeric_sold):
+        if col in sold_df.columns:
+            sns.histplot(sold_df[col].dropna(), bins=50, kde=True, ax=axes[i, 0])
+            axes[i, 0].set_title(f"{col} Distribution")
+            sns.boxplot(x=sold_df[col].dropna(), ax=axes[i, 1])
+            axes[i, 1].set_title(f"{col} Outliers")
+    plt.tight_layout()
+    plt.show()
+
+# 5. Fetch and Merge mortgage data (notebook step)
+mortgage_monthly = load_mortgage_monthly_rates()
+if not sold_df.empty and "CloseDate" in sold_df.columns:
+    sold_df["year_month"] = pd.to_datetime(sold_df["CloseDate"]).dt.to_period("M")
+    sold_with_rates_df = sold_df.merge(mortgage_monthly, on="year_month", how="left")
+else:
+    sold_with_rates_df = sold_df.copy()
+
+if not sold_with_rates_df.empty and "rate_30yr_fixed" in sold_with_rates_df.columns:
+    print(f"Null mortgage rates: {sold_with_rates_df['rate_30yr_fixed'].isnull().sum()}")
+    preview_cols = [c for c in ["CloseDate", "year_month", "ClosePrice", "rate_30yr_fixed"] if c in sold_with_rates_df.columns]
+    if preview_cols:
+        print("\nPreview of the enriched dataset:")
+        print(sold_with_rates_df[preview_cols].head())
+
+# 6. Date conversions & deduplication (notebook step)
+date_cols = ["CloseDate", "ListingContractDate", "PurchaseContractDate", "ContractStatusChangeDate"]
+for col in date_cols:
+    if col in sold_with_rates_df.columns:
+        sold_with_rates_df[col] = pd.to_datetime(sold_with_rates_df[col])
+
+if "ListingKey" in sold_with_rates_df.columns:
+    sold_with_rates_df = sold_with_rates_df.drop_duplicates(subset=["ListingKey"], keep="last")
+
+# 7. Drop critical missing rows (notebook step)
+must_columns_sold = ["ListingKey", "ClosePrice", "CloseDate", "City"]
+existing_must_cols = [c for c in must_columns_sold if c in sold_with_rates_df.columns]
+if existing_must_cols:
+    sold_with_rates_df = sold_with_rates_df.dropna(subset=existing_must_cols)
+
+# 8. Impute missing values (notebook step)
+zero_fill_cols = ["GarageSpaces", "ParkingTotal", "FireplacesTotal"]
+for col in zero_fill_cols:
+    if col in sold_with_rates_df.columns:
+        sold_with_rates_df[col] = sold_with_rates_df[col].fillna(0)
+
+fill_no_cols = ["PoolPrivateYN", "ViewYN", "CoolingYN", "HeatingYN"]
+for col in fill_no_cols:
+    if col in sold_with_rates_df.columns:
+        sold_with_rates_df[col] = sold_with_rates_df[col].fillna(False)
+
+cat_fill_cols = ["ArchitectureStyle", "Heating", "Cooling", "WaterSource"]
+for col in cat_fill_cols:
+    if col in sold_with_rates_df.columns:
+        sold_with_rates_df[col] = sold_with_rates_df[col].fillna("Unknown")
+
+num_fill_cols = ["LotSizeArea", "YearBuilt"]
+for col in num_fill_cols:
+    if col in sold_with_rates_df.columns:
+        sold_with_rates_df[col] = sold_with_rates_df[col].fillna(sold_with_rates_df[col].median())
+
+# 9. Drop missing Living Area (notebook step)
+if "LivingArea" in sold_with_rates_df.columns:
+    sold_with_rates_df = sold_with_rates_df.dropna(subset=["LivingArea"])
+
+# 10. Drop agent cols + clean full name (notebook step)
+agent_drop_cols = ["ListAgentFirstName", "ListAgentLastName"]
+existing_agent_drop_cols = [c for c in agent_drop_cols if c in sold_with_rates_df.columns]
+if existing_agent_drop_cols:
+    sold_with_rates_df = sold_with_rates_df.drop(columns=existing_agent_drop_cols)
+
+if "ListAgentFullName" in sold_with_rates_df.columns:
+    sold_with_rates_df["ListAgentFullName"] = (
+        sold_with_rates_df["ListAgentFullName"]
+        .astype("string")
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .replace("", pd.NA)
+    )
+
+# 11. Remove invalid numeric values (notebook step)
+numeric_required = ["ClosePrice", "LivingArea", "DaysOnMarket", "BedroomsTotal", "BathroomsTotalInteger"]
+if all(c in sold_with_rates_df.columns for c in numeric_required):
+    sold_with_rates_df = sold_with_rates_df[
+        (sold_with_rates_df["ClosePrice"] > 0)
+        & (sold_with_rates_df["LivingArea"] > 0)
+        & (sold_with_rates_df["DaysOnMarket"] >= 0)
+        & (sold_with_rates_df["BedroomsTotal"] >= 0)
+        & (sold_with_rates_df["BathroomsTotalInteger"] >= 0)
     ]
-    
-    # Only select columns that actually exist
-    display_cols = [col for col in display_cols if col in df.columns]
-    
-    print("\n--- Sample Output Table (First 10 Rows) ---")
-    print(df[display_cols].head(10).to_string())
 
-    print("\n--- Segmented Summary Table: Grouped by PropertySubType ---")
-    if 'PropertySubType' in df.columns:
-        summary = df.groupby('PropertySubType').agg({
-            'ListPrice': 'median',
-            'PPSF': 'median',
-            'DaysOnMarket': 'mean'
-        }).reset_index()
-        print(summary)
+# 12. Data consistency flags (match SoldAnalysis.ipynb)
+if all(c in sold_with_rates_df.columns for c in ["ListingContractDate", "CloseDate"]):
+    sold_with_rates_df["listing_after_close_flag"] = sold_with_rates_df["ListingContractDate"] > sold_with_rates_df["CloseDate"]
+else:
+    sold_with_rates_df["listing_after_close_flag"] = False
 
-    print("\n--- Segmented Summary Table: Grouped by CountyOrParish ---")
-    if 'CountyOrParish' in df.columns:
-        summary_county = df.groupby('CountyOrParish').agg({
-            'ListPrice': 'median',
-            'PPSF': 'median',
-            'DaysOnMarket': 'mean'
-        }).reset_index()
-        print(summary_county)
+if all(c in sold_with_rates_df.columns for c in ["PurchaseContractDate", "CloseDate"]):
+    sold_with_rates_df["purchase_after_close_flag"] = sold_with_rates_df["PurchaseContractDate"] > sold_with_rates_df["CloseDate"]
+else:
+    sold_with_rates_df["purchase_after_close_flag"] = False
 
-if __name__ == "__main__":
-    main()
+if "DaysOnMarket" in sold_with_rates_df.columns:
+    sold_with_rates_df["negative_timeline_flag"] = sold_with_rates_df["DaysOnMarket"] < 0
+else:
+    sold_with_rates_df["negative_timeline_flag"] = False
+
+print(f"Number of rows before cleaning {sold_with_rates_df.shape[0]}")
+
+# 13. Geographic filters (notebook step)
+for c in ["Latitude", "Longitude", "PostalCode", "StateOrProvince"]:
+    if c not in sold_with_rates_df.columns:
+        sold_with_rates_df[c] = pd.NA
+
+sold_with_rates_df["missing_coords"] = sold_with_rates_df["Latitude"].isnull() | sold_with_rates_df["Longitude"].isnull()
+sold_with_rates_df["sentinel_coords"] = (sold_with_rates_df["Latitude"] == 0) | (sold_with_rates_df["Longitude"] == 0)
+sold_with_rates_df["cal_coords"] = sold_with_rates_df["Longitude"] > 0
+sold_with_rates_df["PostalCode"] = sold_with_rates_df["PostalCode"].astype(str)
+sold_with_rates_df["is_california"] = (sold_with_rates_df["StateOrProvince"].isin(["CA", "California"])) | (
+    sold_with_rates_df["PostalCode"].str.startswith("9")
+)
+
+sold_with_rates_df = sold_with_rates_df[
+    (sold_with_rates_df["listing_after_close_flag"] == False)
+    & (sold_with_rates_df["purchase_after_close_flag"] == False)
+    & (sold_with_rates_df["negative_timeline_flag"] == False)
+    & (sold_with_rates_df["missing_coords"] == False)
+    & (sold_with_rates_df["sentinel_coords"] == False)
+    & (sold_with_rates_df["cal_coords"] == False)
+    & (sold_with_rates_df["is_california"] == True)
+]
+print(f"Number of rows after cleaning: {sold_with_rates_df.shape[0]}")
+
+# 14. Feature creation (notebook step)
+if all(c in sold_with_rates_df.columns for c in ["ClosePrice", "LivingArea"]):
+    sold_with_rates_df["PricePerSqFt"] = sold_with_rates_df["ClosePrice"] / sold_with_rates_df["LivingArea"]
+if "CloseDate" in sold_with_rates_df.columns:
+    sold_with_rates_df["Year"] = sold_with_rates_df["CloseDate"].dt.year
+    sold_with_rates_df["Month"] = sold_with_rates_df["CloseDate"].dt.month
+    sold_with_rates_df["YrMo"] = sold_with_rates_df["CloseDate"].dt.to_period("M").astype(str)
+if "OriginalListPrice" in sold_with_rates_df.columns:
+    sold_with_rates_df["PriceRatio"] = sold_with_rates_df["ClosePrice"] / sold_with_rates_df["OriginalListPrice"]
+    sold_with_rates_df["CloseToOriginalListRatio"] = sold_with_rates_df["ClosePrice"] / sold_with_rates_df["OriginalListPrice"]
+if all(c in sold_with_rates_df.columns for c in ["PurchaseContractDate", "ListingContractDate"]):
+    sold_with_rates_df["ListingToContractDays"] = sold_with_rates_df["PurchaseContractDate"] - sold_with_rates_df["ListingContractDate"]
+if "PurchaseContractDate" in sold_with_rates_df.columns:
+    sold_with_rates_df["ContractToCloseDays"] = sold_with_rates_df["CloseDate"] - sold_with_rates_df["PurchaseContractDate"]
+
+# 15. IQR outlier flagging + filtered dataset (notebook step)
+sold_rates_filtered_df = sold_with_rates_df.copy()
+if all(c in sold_with_rates_df.columns for c in ["ClosePrice", "LivingArea", "DaysOnMarket"]):
+    close_price_lower, close_price_upper = get_lower_and_upper(sold_with_rates_df, "ClosePrice")
+    living_area_lower, living_area_upper = get_lower_and_upper(sold_with_rates_df, "LivingArea")
+    days_lower, days_upper = get_lower_and_upper(sold_with_rates_df, "DaysOnMarket")
+
+    sold_with_rates_df["closeprice_outlier_flag"] = ~sold_with_rates_df["ClosePrice"].between(close_price_lower, close_price_upper)
+    sold_with_rates_df["livingarea_outlier_flag"] = ~sold_with_rates_df["LivingArea"].between(living_area_lower, living_area_upper)
+    sold_with_rates_df["dom_outlier_flag"] = ~sold_with_rates_df["DaysOnMarket"].between(days_lower, days_upper)
+
+    sold_rates_filtered_df = sold_with_rates_df[
+        (sold_with_rates_df["closeprice_outlier_flag"] == False)
+        & (sold_with_rates_df["livingarea_outlier_flag"] == False)
+        & (sold_with_rates_df["dom_outlier_flag"] == False)
+    ]
+
+print(f"Full SOLD dataset:     {len(sold_with_rates_df):,} rows")
+print(f"Filtered SOLD dataset: {len(sold_rates_filtered_df):,} rows")
+print(f"Removed SOLD:          {len(sold_with_rates_df) - len(sold_rates_filtered_df):,} rows")
+
+if WRITE_OUTPUTS:
+    sold_rates_filtered_df.to_csv("Final_Sold.csv", index=False)
+
+
+# ==========================================
+# PART 2: CRMLS LISTING DATA PIPELINE
+# ==========================================
+
+# 1. Data Aggregation
+listing_data = glob.glob("**/CRMLSListing*.csv", recursive=True)
+listing_parts = []
+for file in listing_data:
+    df = pd.read_csv(file, encoding="ISO-8859-1", low_memory=False)
+    print(f"{file}: {len(df)}")
+    listing_parts.append(df)
+listing_df = pd.concat(listing_parts, ignore_index=True) if listing_parts else pd.DataFrame()
+print(f"Rows after aggregation: {len(listing_df)}")
+
+# 2. Filter to Residential
+if not listing_df.empty and "PropertyType" in listing_df.columns:
+    print(f"Rows before Residential Filter: {len(listing_df)}")
+    listing_df = listing_df[listing_df["PropertyType"] == "Residential"]
+    print(f"Rows after Residential Filter: {len(listing_df)}")
+
+# 3. Drop columns with >90% missing values
+if not listing_df.empty:
+    print(f"Number of columns before dropping: {listing_df.shape[1]}")
+    threshold = 0.1 * len(listing_df)
+    listing_df.dropna(thresh=threshold, axis=1, inplace=True)
+    print(f"Number of columns after dropping: {listing_df.shape[1]}")
+
+# 4. Outlier & Distribution Graphs (EDA)
+core_numeric_listing = ["ClosePrice", "LivingArea", "DaysOnMarket"]
+if not listing_df.empty:
+    _ = listing_df[core_numeric_listing].describe()
+    fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(12, 40))
+    for i, col in enumerate(core_numeric_listing):
+        if col in listing_df.columns:
+            sns.histplot(listing_df[col].dropna(), bins=50, kde=True, ax=axes[i, 0])
+            axes[i, 0].set_title(f"{col} Distribution")
+            sns.boxplot(x=listing_df[col].dropna(), ax=axes[i, 1])
+            axes[i, 1].set_title(f"{col} Outliers")
+    plt.tight_layout()
+    plt.show()
+
+# 5. Merge mortgage data (notebook step)
+if not listing_df.empty and "ListingContractDate" in listing_df.columns:
+    listing_df["year_month"] = pd.to_datetime(listing_df["ListingContractDate"]).dt.to_period("M")
+    listing_with_rates_df = listing_df.merge(mortgage_monthly, on="year_month", how="left")
+else:
+    listing_with_rates_df = listing_df.copy()
+
+if not listing_with_rates_df.empty and "rate_30yr_fixed" in listing_with_rates_df.columns:
+    print(f"Null mortgage rates: {listing_with_rates_df['rate_30yr_fixed'].isnull().sum()}")
+    preview_cols = [c for c in ["ListingContractDate", "year_month", "ListPrice", "rate_30yr_fixed"] if c in listing_with_rates_df.columns]
+    if preview_cols:
+        print("\nPreview of the enriched dataset:")
+        print(listing_with_rates_df[preview_cols].head())
+
+# 6. Date conversions & deduplication (notebook step)
+for col in date_cols:
+    if col in listing_with_rates_df.columns:
+        listing_with_rates_df[col] = pd.to_datetime(listing_with_rates_df[col])
+
+if "ListingKey" in listing_with_rates_df.columns:
+    listing_with_rates_df = listing_with_rates_df.drop_duplicates(subset=["ListingKey"], keep="last")
+
+listing_with_rates_df = listing_with_rates_df.drop(columns=[c for c in listing_with_rates_df.columns if c.endswith(".1")])
+
+# 7. Drop critical missing rows (notebook step)
+must_columns_listing = ["ListingKey", "ListPrice", "City"]
+existing_must_cols = [c for c in must_columns_listing if c in listing_with_rates_df.columns]
+if existing_must_cols:
+    listing_with_rates_df = listing_with_rates_df.dropna(subset=existing_must_cols)
+
+# 8. Impute missing values (notebook step)
+for col in zero_fill_cols:
+    if col in listing_with_rates_df.columns:
+        listing_with_rates_df[col] = listing_with_rates_df[col].fillna(0)
+for col in fill_no_cols:
+    if col in listing_with_rates_df.columns:
+        listing_with_rates_df[col] = listing_with_rates_df[col].fillna(False)
+for col in cat_fill_cols:
+    if col in listing_with_rates_df.columns:
+        listing_with_rates_df[col] = listing_with_rates_df[col].fillna("Unknown")
+for col in num_fill_cols:
+    if col in listing_with_rates_df.columns:
+        listing_with_rates_df[col] = listing_with_rates_df[col].fillna(listing_with_rates_df[col].median())
+
+# 9. Drop missing Living Area (notebook step)
+if "LivingArea" in listing_with_rates_df.columns:
+    listing_with_rates_df = listing_with_rates_df.dropna(subset=["LivingArea"])
+
+# 10. Drop agent cols + clean full name (notebook step)
+existing_agent_drop_cols = [c for c in agent_drop_cols if c in listing_with_rates_df.columns]
+if existing_agent_drop_cols:
+    listing_with_rates_df = listing_with_rates_df.drop(columns=existing_agent_drop_cols)
+if "ListAgentFullName" in listing_with_rates_df.columns:
+    listing_with_rates_df["ListAgentFullName"] = (
+        listing_with_rates_df["ListAgentFullName"]
+        .astype("string")
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .replace("", pd.NA)
+    )
+
+# 11. Data consistency flags (match ListingAnalysis.ipynb)
+if all(c in listing_with_rates_df.columns for c in ["ListingContractDate", "PurchaseContractDate"]):
+    invalid_contracts = (listing_with_rates_df["ListingContractDate"] > listing_with_rates_df["PurchaseContractDate"]) & listing_with_rates_df[
+        "PurchaseContractDate"
+    ].notna()
+    listing_with_rates_df["contract_before_listing_flag"] = invalid_contracts
+else:
+    listing_with_rates_df["contract_before_listing_flag"] = False
+
+if "DaysOnMarket" in listing_with_rates_df.columns:
+    listing_with_rates_df["negative_timeline_flag"] = listing_with_rates_df["DaysOnMarket"] < 0
+else:
+    listing_with_rates_df["negative_timeline_flag"] = False
+
+print(f"Contract Date Errors: {int(listing_with_rates_df['contract_before_listing_flag'].sum())}")
+print(f"Negative Timeline Errors: {int(listing_with_rates_df['negative_timeline_flag'].sum())}")
+
+# 12. Geographic filters (notebook step)
+print(f"Number of rows before cleaning: {listing_with_rates_df.shape[0]}")
+for c in ["Latitude", "Longitude", "PostalCode", "StateOrProvince"]:
+    if c not in listing_with_rates_df.columns:
+        listing_with_rates_df[c] = pd.NA
+
+listing_with_rates_df["missing_coords"] = listing_with_rates_df["Latitude"].isnull() | listing_with_rates_df["Longitude"].isnull()
+listing_with_rates_df["sentinel_coords"] = (listing_with_rates_df["Latitude"] == 0) | (listing_with_rates_df["Longitude"] == 0)
+listing_with_rates_df["cal_coords"] = listing_with_rates_df["Longitude"] > 0
+listing_with_rates_df["PostalCode"] = listing_with_rates_df["PostalCode"].astype(str)
+listing_with_rates_df["is_california"] = (listing_with_rates_df["StateOrProvince"].isin(["CA", "California"])) | (
+    listing_with_rates_df["PostalCode"].str.startswith("9")
+)
+
+listing_with_rates_df = listing_with_rates_df[
+    (listing_with_rates_df["missing_coords"] == False)
+    & (listing_with_rates_df["sentinel_coords"] == False)
+    & (listing_with_rates_df["cal_coords"] == False)
+    & (listing_with_rates_df["negative_timeline_flag"] == False)
+    & (listing_with_rates_df["contract_before_listing_flag"] == False)
+    & (listing_with_rates_df["is_california"] == True)
+]
+print(f"Number of rows after cleaning: {listing_with_rates_df.shape[0]}")
+
+# 13. Additional sanity filters (match notebook)
+if "LivingArea" in listing_with_rates_df.columns:
+    listing_with_rates_df = listing_with_rates_df[
+        listing_with_rates_df["LivingArea"].isna() | (listing_with_rates_df["LivingArea"] > 0)
+    ]
+if "Longitude" in listing_with_rates_df.columns:
+    # Notebook logic gates on Latitude.isna() but checks Longitude range.
+    listing_with_rates_df = listing_with_rates_df[
+        listing_with_rates_df["Latitude"].isna() | listing_with_rates_df["Longitude"].between(-124, -114)
+    ]
+if "DaysOnMarket" in listing_with_rates_df.columns:
+    listing_with_rates_df = listing_with_rates_df[
+        listing_with_rates_df["DaysOnMarket"].isna() | (listing_with_rates_df["DaysOnMarket"] >= 0)
+    ]
+
+# 14. Feature creation (notebook step)
+if "ListingContractDate" in listing_with_rates_df.columns:
+    listing_with_rates_df["Year"] = listing_with_rates_df["ListingContractDate"].dt.year
+    listing_with_rates_df["Month"] = listing_with_rates_df["ListingContractDate"].dt.month
+    listing_with_rates_df["YrMo"] = listing_with_rates_df["ListingContractDate"].dt.to_period("M").astype(str)
+if all(c in listing_with_rates_df.columns for c in ["ListPrice", "LivingArea"]):
+    listing_with_rates_df["ListPricePerSqFt"] = listing_with_rates_df["ListPrice"] / listing_with_rates_df["LivingArea"]
+
+# 15. IQR outlier flagging + filtered dataset (notebook step)
+listing_rates_filtered_df = listing_with_rates_df.copy()
+if all(c in listing_with_rates_df.columns for c in ["ClosePrice", "LivingArea", "DaysOnMarket"]):
+    close_price_lower, close_price_upper = get_lower_and_upper(listing_with_rates_df, "ClosePrice")
+    living_area_lower, living_area_upper = get_lower_and_upper(listing_with_rates_df, "LivingArea")
+    days_lower, days_upper = get_lower_and_upper(listing_with_rates_df, "DaysOnMarket")
+
+    listing_with_rates_df["closeprice_outlier_flag"] = ~listing_with_rates_df["ClosePrice"].between(close_price_lower, close_price_upper)
+    listing_with_rates_df["livingarea_outlier_flag"] = ~listing_with_rates_df["LivingArea"].between(living_area_lower, living_area_upper)
+    listing_with_rates_df["dom_outlier_flag"] = ~listing_with_rates_df["DaysOnMarket"].between(days_lower, days_upper)
+
+    listing_rates_filtered_df = listing_with_rates_df[
+        (listing_with_rates_df["closeprice_outlier_flag"] == False)
+        & (listing_with_rates_df["livingarea_outlier_flag"] == False)
+        & (listing_with_rates_df["dom_outlier_flag"] == False)
+    ]
+
+print(f"Full LISTING dataset:     {len(listing_with_rates_df):,} rows")
+print(f"Filtered LISTING dataset: {len(listing_rates_filtered_df):,} rows")
+print(f"Removed LISTING:          {len(listing_with_rates_df) - len(listing_rates_filtered_df):,} rows")
+
+if WRITE_OUTPUTS:
+    listing_rates_filtered_df.to_csv("Final_Listing.csv", index=False)
+

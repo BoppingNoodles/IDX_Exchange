@@ -1,4 +1,3 @@
-import glob
 import warnings
 from pathlib import Path
 
@@ -16,8 +15,7 @@ def load_mortgage_monthly_rates() -> pd.DataFrame:
     """
     Load 30-year fixed mortgage rates and aggregate to monthly averages.
 
-    Prefers local `MORTGAGE30US.csv` to avoid network dependency. Falls back
-    to the FRED CSV download URL if the local file is missing.
+    Uses local `MORTGAGE30US.csv` only to avoid a FRED network/API dependency.
     """
     local_path = Path("MORTGAGE30US.csv")
     if local_path.exists():
@@ -26,9 +24,11 @@ def load_mortgage_monthly_rates() -> pd.DataFrame:
         value_col = "MORTGAGE30US" if "MORTGAGE30US" in mortgage.columns else mortgage.columns[-1]
         mortgage = mortgage.rename(columns={"observation_date": "date", value_col: "rate_30yr_fixed"})
     else:
-        url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
-        mortgage = pd.read_csv(url, parse_dates=["observation_date"])
-        mortgage.columns = ["date", "rate_30yr_fixed"]
+        # FRED API/network fallback intentionally disabled.
+        # url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
+        # mortgage = pd.read_csv(url, parse_dates=["observation_date"])
+        # mortgage.columns = ["date", "rate_30yr_fixed"]
+        return pd.DataFrame(columns=["year_month", "rate_30yr_fixed"])
 
     mortgage["year_month"] = mortgage["date"].dt.to_period("M")
     return mortgage.groupby("year_month")["rate_30yr_fixed"].mean().reset_index()
@@ -47,15 +47,10 @@ def get_lower_and_upper(df: pd.DataFrame, col: str):
 # PART 1: CRMLS SOLD DATA PIPELINE
 # ==========================================
 
-# 1. Data Aggregation
-sold_data = glob.glob("**/CRMLSSold*.csv", recursive=True)
-sold_parts = []
-for file in sold_data:
-    df = pd.read_csv(file, encoding="ISO-8859-1", low_memory=False)
-    print(f"{file}: {len(df)}")
-    sold_parts.append(df)
-sold_df = pd.concat(sold_parts, ignore_index=True) if sold_parts else pd.DataFrame()
-print(f"Rows after aggregation: {len(sold_df)}")
+# 1. Load pre-aggregated raw data
+sold_df = pd.read_csv("AggSold.csv", encoding="ISO-8859-1", low_memory=False)
+print(f"AggSold.csv: {len(sold_df)}")
+print(f"Rows after loading aggregated sold data: {len(sold_df)}")
 
 # 2. Filter to Residential
 if not sold_df.empty and "PropertyType" in sold_df.columns:
@@ -251,15 +246,10 @@ if WRITE_OUTPUTS:
 # PART 2: CRMLS LISTING DATA PIPELINE
 # ==========================================
 
-# 1. Data Aggregation
-listing_data = glob.glob("**/CRMLSListing*.csv", recursive=True)
-listing_parts = []
-for file in listing_data:
-    df = pd.read_csv(file, encoding="ISO-8859-1", low_memory=False)
-    print(f"{file}: {len(df)}")
-    listing_parts.append(df)
-listing_df = pd.concat(listing_parts, ignore_index=True) if listing_parts else pd.DataFrame()
-print(f"Rows after aggregation: {len(listing_df)}")
+# 1. Load pre-aggregated raw data
+listing_df = pd.read_csv("AggListing.csv", encoding="ISO-8859-1", low_memory=False)
+print(f"AggListing.csv: {len(listing_df)}")
+print(f"Rows after loading aggregated listing data: {len(listing_df)}")
 
 # 2. Filter to Residential
 if not listing_df.empty and "PropertyType" in listing_df.columns:
